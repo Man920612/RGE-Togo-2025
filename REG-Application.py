@@ -130,4 +130,3 @@ elif onglet == "Chatbot IA":
                 st.error("Erreur lors de l'appel à l'API OpenAI.")
         except Exception as e:
             st.error(f"Erreur : {e}")
-
