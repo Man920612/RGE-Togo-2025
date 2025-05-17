@@ -1,132 +1,178 @@
 import streamlit as st
-import pandas as pd
+import cv2
 import numpy as np
-import datetime
-import requests
-import json
-import hashlib
 import time
-from urllib.error import URLError
-from streamlit_folium import folium_static
-import folium
+import os
+from geopy.distance import geodesic
+from streamlit_javascript import st_javascript
+import pandas as pd
+from datetime import datetime
+from deepface import DeepFace
 
-# Fonction de hachage des données pour détection de changement
-def hash_data(df):
-    return hashlib.md5(pd.util.hash_pandas_object(df, index=True).values).hexdigest()
+# Créer dossier pour stocker les photos si inexistant
+if not os.path.exists("photos"):
+    os.makedirs("photos")
 
-# Fonction de lecture depuis Google Sheets
-@st.cache_data(ttl=60)
-def load_data():
-    url = "https://docs.google.com/spreadsheets/d/1tHG9eTqzyOkl9HKAWo6RU3voBxCqnotx2_R8sfZ31jQ/export?format=csv"
-    try:
-        df = pd.read_csv(url)
-        df["Date debut collecte"] = pd.to_datetime(df["Date debut collecte"], errors='coerce')
-        df["Date fin collecte"] = pd.to_datetime(df["Date fin collecte"], errors='coerce')
-        df["Duree_collecte"] = (df["Date fin collecte"] - df["Date debut collecte"]).dt.days
-        return df
-    except Exception as e:
-        st.error(f"Erreur lors du chargement des données : {e}")
-        return pd.DataFrame()
+# Fichier journal
+log_path = "journal_presence.csv"
 
-# Authentification
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
+st.set_page_config(page_title="Contrôle de Présence", layout="centered")
+st.title("📍 Application de Contrôle de Présence")
 
-if not st.session_state.authenticated:
-    st.title("🔐 Authentification requise")
-    password = st.text_input("Entrez le mot de passe :", type="password")
-    if st.button("Connexion"):
-        if password == "RGE2025":
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("Mot de passe incorrect !")
-    st.stop()
+menu = ["📷 Enregistrement", "✅ Vérification", "📊 Journal de Présence"]
+choice = st.sidebar.radio("Navigation", menu)
 
-# Interface principale
-st.set_page_config(page_title="Suivi Collecte RGE-2", layout="wide")
-st.title("📊 Suivi de la collecte des données - RGE-2")
-data = load_data()
+if "base_location" not in st.session_state:
+    st.session_state.base_location = None
 
-# Onglets
-onglet = st.sidebar.radio("Navigation", ["Statistiques", "Carte", "Suivi des agents", "Chatbot IA"])
+def get_real_location():
+    coords = st_javascript("""
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const lat = pos.coords.latitude;
+                const lon = pos.coords.longitude;
+                Streamlit.setComponentValue([lat, lon]);
+            },
+            (err) => {
+                Streamlit.setComponentValue(null);
+            }
+        );
+    """)
+    return tuple(coords) if coords else None
 
-if onglet == "Statistiques":
-    st.subheader("📈 Statistiques globales")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Zones recensées", data["Code Zone de recensement"].nunique())
-    with col2:
-        st.metric("Îlots recensés", data["Numero de l'ilot"].nunique())
-    with col3:
-        st.metric("Total collectes", len(data))
+def capture_image():
+    cap = cv2.VideoCapture(0)
+    time.sleep(1)
+    ret, frame = cap.read()
+    cap.release()
+    if ret:
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return None
 
-    st.subheader("📅 Évolution des collectes")
-    hist = data["Date debut collecte"].value_counts().sort_index()
-    st.bar_chart(hist)
-
-elif onglet == "Carte":
-    st.subheader("🗺️ Carte des collectes")
-
-    date1 = st.date_input("Date de début", datetime.date(2025, 1, 1))
-    date2 = st.date_input("Date de fin", datetime.date.today())
-    agents = ["Tous"] + sorted(data["Nom et prenoms"].dropna().unique())
-    selected_agent = st.selectbox("Choisir un agent", agents)
-
-    filtered = data[
-        (data["Date debut collecte"] >= pd.to_datetime(date1)) &
-        (data["Date fin collecte"] <= pd.to_datetime(date2))
-    ]
-    if selected_agent != "Tous":
-        filtered = filtered[filtered["Nom et prenoms"] == selected_agent]
-
-    # Convertir LATITUDE et LONGITUDE en numériques
-    filtered["LATITUDE"] = pd.to_numeric(filtered["LATITUDE"], errors="coerce")
-    filtered["LONGITUDE"] = pd.to_numeric(filtered["LONGITUDE"], errors="coerce")
-
-    map_data = filtered[["LATITUDE", "LONGITUDE"]].dropna()
-
-    if not map_data.empty:
-        st.map(map_data.rename(columns={"LATITUDE": "lat", "LONGITUDE": "lon"}))
+def enregistrer_presence(tel, location, distance, status):
+    log_data = {
+        "Telephone": tel,
+        "DateHeure": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Latitude": location[0],
+        "Longitude": location[1],
+        "Distance_m": int(distance),
+        "Statut": status
+    }
+    df = pd.DataFrame([log_data])
+    if not os.path.exists(log_path):
+        df.to_csv(log_path, index=False)
     else:
-        st.warning("Aucune donnée géographique disponible pour les filtres sélectionnés.")
+        df.to_csv(log_path, mode='a', header=False, index=False)
 
-elif onglet == "Suivi des agents":
-    st.subheader("📋 Suivi des agents")
-    date1 = st.date_input("Date début", datetime.date(2025, 1, 1), key="dd")
-    date2 = st.date_input("Date fin", datetime.date.today(), key="df")
-    seuil = st.number_input("Seuil de collectes minimum", min_value=1, value=10)
+def verifier_visage(ref_path, new_img):
+    try:
+        result = DeepFace.verify(img1_path=ref_path, img2_path=new_img, enforce_detection=True)
+        return result["verified"]
+    except Exception as e:
+        st.error(f"Erreur DeepFace : {e}")
+        return False
 
-    filt = data[(data["Date debut collecte"] >= pd.to_datetime(date1)) &
-                (data["Date fin collecte"] <= pd.to_datetime(date2))]
-    stats = filt.groupby("Nom et prenoms").agg({
-        "Duree_collecte": "mean",
-        "Date debut collecte": "count"
-    }).rename(columns={"Duree_collecte": "Durée moyenne (jours)", "Date debut collecte": "Total collectes"})
-    stats = stats[stats["Total collectes"] <= seuil]
-    st.dataframe(stats.reset_index())
-
-elif onglet == "Chatbot IA":
-    st.subheader("🤖 Chatbot IA")
-    user_message = st.text_input("Posez une question :")
-    if st.button("Envoyer") and user_message:
+def safe_rerun():
+    try:
+        st.rerun()
+    except AttributeError:
         try:
-            API_KEY = "sk-proj-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-            headers = {
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json"
-            }
-            data_payload = {
-                "model": "text-davinci-003",
-                "prompt": user_message,
-                "max_tokens": 150
-            }
-            response = requests.post("https://api.openai.com/v1/completions", headers=headers, json=data_payload)
-            if response.status_code == 200:
-                reply = response.json()["choices"][0]["text"].strip()
-                st.markdown(f"**Vous :** {user_message}")
-                st.markdown(f"**Chatbot :** {reply}")
+            st.experimental_rerun()
+        except:
+            st.warning("Impossible de relancer l'application automatiquement.")
+
+# 📷 ENREGISTREMENT
+if choice == "📷 Enregistrement":
+    st.subheader("Étape 1 : Enregistrement de l'agent")
+    tel = st.text_input("Numéro de téléphone de l'agent", max_chars=8)
+
+    if len(tel) == 8 and tel.isdigit():
+        location = get_real_location()
+        if location:
+            st.success(f"📌 Coordonnées détectées automatiquement : {location}")
+            st.session_state.base_location = location
+        else:
+            st.warning("⚠️ GPS indisponible. Entrez manuellement :")
+            lat = st.number_input("Latitude manuelle", value=6.1319, format="%.6f")
+            lon = st.number_input("Longitude manuelle", value=1.2228, format="%.6f")
+            location = (lat, lon)
+            st.session_state.base_location = location
+
+        if st.button("📸 Capturer et Enregistrer"):
+            img = capture_image()
+            if img is not None:
+                cv2.imwrite(f"photos/{tel}.jpg", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+                st.image(img, caption="Image capturée", use_container_width=True)
+                st.success("✅ Agent enregistré avec succès.")
+                st.info(f"Coordonnées de référence : {location}")
             else:
-                st.error("Erreur lors de l'appel à l'API OpenAI.")
-        except Exception as e:
-            st.error(f"Erreur : {e}")
+                st.error("Erreur de capture.")
+    else:
+        st.warning("Numéro invalide (8 chiffres).")
+
+# ✅ VÉRIFICATION
+elif choice == "✅ Vérification":
+    st.subheader("Étape 2 : Vérification de la présence")
+    tel = st.text_input("Numéro de téléphone de l'agent", max_chars=8)
+
+    if len(tel) == 8 and tel.isdigit():
+        path = f"photos/{tel}.jpg"
+        if not os.path.exists(path):
+            st.error("❌ Aucun enregistrement pour ce numéro.")
+        else:
+            location = get_real_location()
+            if location:
+                st.success(f"📌 Position actuelle : {location}")
+            else:
+                st.warning("⚠️ GPS indisponible. Entrez manuellement :")
+                lat = st.number_input("Latitude actuelle", value=6.1319, format="%.6f")
+                lon = st.number_input("Longitude actuelle", value=1.2228, format="%.6f")
+                location = (lat, lon)
+
+            if st.button("📸 Vérifier la Présence") and location:
+                new_img = capture_image()
+                if new_img is not None:
+                    match = verifier_visage(path, new_img)
+                    distance = geodesic(st.session_state.base_location, location).meters
+                    st.image(new_img, caption="Image capturée", use_container_width=True)
+
+                    if match:
+                        if distance <= 100:
+                            st.success(f"✅ Agent reconnu à {int(distance)} m : Présence validée.")
+                            enregistrer_presence(tel, location, distance, "Validée")
+                        else:
+                            st.error(f"❌ Trop éloigné : {int(distance)} m > 100 m.")
+                            enregistrer_presence(tel, location, distance, "Refusée - Trop éloigné")
+                    else:
+                        st.error("❌ Visage non reconnu.")
+                        enregistrer_presence(tel, location, 0, "Refusée - Visage non reconnu")
+                else:
+                    st.error("Erreur de webcam.")
+    else:
+        st.warning("Numéro invalide (8 chiffres).")
+
+# 📊 JOURNAL DE PRÉSENCE
+elif choice == "📊 Journal de Présence":
+    st.subheader("📊 Journal de Présence des Agents")
+    if os.path.exists(log_path):
+        df = pd.read_csv(log_path)
+
+        # Filtrage par téléphone
+        unique_tels = df["Telephone"].unique().tolist()
+        tel_filter = st.selectbox("Filtrer par numéro de téléphone", ["Tous"] + unique_tels)
+
+        if tel_filter != "Tous":
+            df = df[df["Telephone"] == tel_filter]
+
+        st.dataframe(df, use_container_width=True)
+
+        # Bouton de téléchargement
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📤 Télécharger le journal CSV",
+            data=csv,
+            file_name="journal_presence.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("Aucune donnée de présence enregistrée pour l’instant.")
