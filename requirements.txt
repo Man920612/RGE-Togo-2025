@@ -1,6 +1,10 @@
-streamlit
-pandas
+streamlit>=1.25
+opencv-python
 numpy
-requests
-folium
-streamlit-folium
+pandas
+geopy
+streamlit-javascript
+tensorflow==2.12.0
+deepface==0.0.79
+keras==2.12.0
+tf-keras
