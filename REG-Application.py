@@ -5,7 +5,6 @@ import datetime
 import requests
 import json
 import hashlib
-import time
 from urllib.error import URLError
 from streamlit_folium import folium_static
 import folium
@@ -33,6 +32,7 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
+    st.set_page_config(page_title="Suivi Collecte RGE-2", layout="wide")
     st.title("🔐 Authentification requise")
     password = st.text_input("Entrez le mot de passe :", type="password")
     if st.button("Connexion"):
@@ -48,10 +48,11 @@ st.set_page_config(page_title="Suivi Collecte RGE-2", layout="wide")
 st.title("📊 Suivi de la collecte des données - RGE-2")
 data = load_data()
 
-# Onglets
-onglet = st.sidebar.radio("Navigation", ["Statistiques", "Carte", "Suivi des agents", "Chatbot IA"])
+# Onglets horizontaux
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Statistiques", "🗺️ Carte", "📋 Suivi des agents", "🤖 Chatbot IA"])
 
-if onglet == "Statistiques":
+# --- Onglet 1 : Statistiques ---
+with tab1:
     st.subheader("📈 Statistiques globales")
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -65,11 +66,11 @@ if onglet == "Statistiques":
     hist = data["Date debut collecte"].value_counts().sort_index()
     st.bar_chart(hist)
 
-elif onglet == "Carte":
+# --- Onglet 2 : Carte ---
+with tab2:
     st.subheader("🗺️ Carte des collectes")
-
-    date1 = st.date_input("Date de début", datetime.date(2025, 1, 1))
-    date2 = st.date_input("Date de fin", datetime.date.today())
+    date1 = st.date_input("Date de début", datetime.date(2025, 1, 1), key="carte_dd")
+    date2 = st.date_input("Date de fin", datetime.date.today(), key="carte_df")
     agents = ["Tous"] + sorted(data["Nom et prenoms"].dropna().unique())
     selected_agent = st.selectbox("Choisir un agent", agents)
 
@@ -80,7 +81,6 @@ elif onglet == "Carte":
     if selected_agent != "Tous":
         filtered = filtered[filtered["Nom et prenoms"] == selected_agent]
 
-    # Convertir LATITUDE et LONGITUDE en numériques
     filtered["LATITUDE"] = pd.to_numeric(filtered["LATITUDE"], errors="coerce")
     filtered["LONGITUDE"] = pd.to_numeric(filtered["LONGITUDE"], errors="coerce")
 
@@ -91,22 +91,29 @@ elif onglet == "Carte":
     else:
         st.warning("Aucune donnée géographique disponible pour les filtres sélectionnés.")
 
-elif onglet == "Suivi des agents":
+# --- Onglet 3 : Suivi des agents ---
+with tab3:
     st.subheader("📋 Suivi des agents")
-    date1 = st.date_input("Date début", datetime.date(2025, 1, 1), key="dd")
-    date2 = st.date_input("Date fin", datetime.date.today(), key="df")
+    date1 = st.date_input("Date début", datetime.date(2025, 1, 1), key="suivi_dd")
+    date2 = st.date_input("Date fin", datetime.date.today(), key="suivi_df")
     seuil = st.number_input("Seuil de collectes minimum", min_value=1, value=10)
 
-    filt = data[(data["Date debut collecte"] >= pd.to_datetime(date1)) &
-                (data["Date fin collecte"] <= pd.to_datetime(date2))]
+    filt = data[
+        (data["Date debut collecte"] >= pd.to_datetime(date1)) &
+        (data["Date fin collecte"] <= pd.to_datetime(date2))
+    ]
     stats = filt.groupby("Nom et prenoms").agg({
         "Duree_collecte": "mean",
         "Date debut collecte": "count"
-    }).rename(columns={"Duree_collecte": "Durée moyenne (jours)", "Date debut collecte": "Total collectes"})
+    }).rename(columns={
+        "Duree_collecte": "Durée moyenne (jours)",
+        "Date debut collecte": "Total collectes"
+    })
     stats = stats[stats["Total collectes"] <= seuil]
     st.dataframe(stats.reset_index())
 
-elif onglet == "Chatbot IA":
+# --- Onglet 4 : Chatbot IA ---
+with tab4:
     st.subheader("🤖 Chatbot IA")
     user_message = st.text_input("Posez une question :")
     if st.button("Envoyer") and user_message:
