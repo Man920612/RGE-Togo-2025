@@ -38,7 +38,7 @@ if not st.session_state.authenticated:
     if st.button("Connexion"):
         if password == "RGE2025":
             st.session_state.authenticated = True
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Mot de passe incorrect !")
     st.stop()
