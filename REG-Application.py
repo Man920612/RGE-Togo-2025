@@ -118,19 +118,21 @@ with tab4:
     user_message = st.text_input("Posez une question :")
     if st.button("Envoyer") and user_message:
         try:
-            API_KEY = "sk-proj-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+            API_KEY = st.secrets["openai"]["api_key"]
             headers = {
                 "Authorization": f"Bearer {API_KEY}",
                 "Content-Type": "application/json"
             }
             data_payload = {
-                "model": "text-davinci-003",
-                "prompt": user_message,
-                "max_tokens": 150
+                "model": "gpt-4",
+                "messages": [
+                    {"role": "system", "content": "Tu es un assistant pour l'analyse des données de collecte."},
+                    {"role": "user", "content": user_message}
+                ]
             }
-            response = requests.post("https://api.openai.com/v1/completions", headers=headers, json=data_payload)
+            response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data_payload)
             if response.status_code == 200:
-                reply = response.json()["choices"][0]["text"].strip()
+                reply = response.json()["choices"][0]["message"]["content"].strip()
                 st.markdown(f"**Vous :** {user_message}")
                 st.markdown(f"**Chatbot :** {reply}")
             else:
